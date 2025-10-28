@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <title>HAPPY BIRTHDAY</title>
+
+    <style>
+        body {
+            margin: 0;
+            background: #000;
+            overflow: hidden;
+            font-family: "Trebuchet MS", "Arial Rounded MT Bold", sans-serif;
+        }
+
+        /* Start Button */
+        #startBtn {
+            position: absolute;
+            left: 50%;
+            top: 70%;
+            transform: translate(-50%, -50%);
+            background: #075100;             /* 深暗綠色 */
+            color: #eee;                     /* 淺色字體 */
+            border: none;
+            width: 180px;
+            height: 60px;
+            font-size: 22px;
+            border-radius: 6px;
+            cursor: pointer;
+            box-shadow: 0 0 15px rgba(0, 255, 128, 0.63);
+        }
+        #startBtn:hover { background: #076700; }
+
+        /* 文字容器（置中） */
+        #birthdayText {
+            position: absolute;
+            width: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            top: 40%;
+            pointer-events: none;
+            display: none;
+        }
+
+        .line {
+            text-align: center;
+            white-space: nowrap;
+            letter-spacing: 0.25em;
+            font-size: 56px;
+            margin: 6px 0;
+        }
+       
+        canvas {
+            position: fixed;
+            left: 0;
+            top: 0;
+            width: 100vw;
+            height: 100vh;
+            display: block;
+        }
+
+        .char {
+            display: inline-block;
+            position: relative;
+            transform: translateY(100vh);
+            opacity: 0;
+            will-change: transform, opacity;
+        }
+
+        /* 進場動畫：從底部飛上來到停位 */
+        @keyframes flyUp {
+            from { transform: translateY(120vh); opacity: 0; }
+            to   { transform: translateY(0);     opacity: 1; }
+        }
+
+        /* 離場動畫：往上飛出畫面（不消失） */
+        @keyframes flyOut {
+            from { transform: translateY(0);     opacity: 1; }
+            to   { transform: translateY(-120vh);opacity: 1; }
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="canvas"></canvas>
+    <button id="startBtn">Start</button>
+
+    <!-- 三行文字 -->
+    <div id="birthdayText">
+        <div id="lineTop" class="line"></div>
+        <div id="lineBottom" class="line"></div>
+        <div id="linethew" class="line"></div>
+    </div>
+
+    <script>
+        // ---------- 畫布設定 ----------
+        const canvas = document.getElementById("canvas");
+        const ctx = canvas.getContext("2d");
+
+       //function resizeCanvas() {
+        //    const dpr = window.devicePixelRatio || 1;
+        //    canvas.width = window.innerWidth * dpr;
+        //    canvas.height = window.innerHeight * dpr;
+        //    ctx.scale(dpr, dpr);
+        //}
+    
+        function resizeCanvas() {
+            canvas.width=innerWidth;
+            canvas.height=innerHeight;
+        }
+        //window.addEventListener("resize",resizeCanvas);
+        window.addEventListener("orientationchange", resizeCanvas);
+        resizeCanvas();
+
+        // ---------- 音效 ----------
+        const launchSound = new Audio("launch.mp3");
+        const explodeSounds = [
+            new Audio("explode1.mp3"),
+            new Audio("explode2.mp3"),
+            new Audio("explode3.mp3")
+        ];
+
+        // ---------- 工具函數 ----------
+        function rand(min, max) { return Math.random() * (max - min) + min; }
+        function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+        // 粒子顏色調色盤（同時最多 8 種）
+        const PALETTE = [
+            "#8ca9d4", "#a8d8a0", "#d8a8a0", "#c5a8d8",
+            "#a8cfd8", "#d8cfa8", "#89a37b", "#7e8fa8"
+        ];
+
+        // ---------- 粒子類別 ----------
+        class Particle {
+            constructor(x, y, vx, vy, color, life, gravity) {
+                this.x = x;
+                this.y = y;
+                this.vx = vx;
+                this.vy = vy;
+                this.color = color;
+                this.life = life;
+                this.gravity = gravity;
+                this.alpha = 1;
+            }
+
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                this.vy += this.gravity;
+                this.life -= 1;
+
+                // 🚀 碰到底部或左右邊界即消失
+                if (
+                    this.y >= canvas.height ||     // 底部
+                    this.x <= 0 ||                 // 左邊界
+                    this.x >= canvas.width         // 右邊界
+                ) {
+                    this.alpha = 0;
+                    this.life = 0;
+                    return;
+                }
+
+                // 透明度漸減（確保仍能逐步淡出）
+                if (this.alpha < 0) this.alpha = 0;
+            }
+
+            draw() {
+                ctx.save();
+                ctx.globalAlpha = this.alpha;
+                //ctx.shadowBlur = 15;
+                ctx.shadowBlur = canvas.width < 600 ? 6 : 15;
+                ctx.shadowColor = this.color;
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, 3.2, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            }
+        }
+
+        // ---------- 全域狀態 ----------
+        let particles = [];
+        let fireworksActive = 0;   // 同時存在煙火數量
+        let fireworksRunning = true;
+        let fireworkTimer = null;
+
+        // 用來追蹤第幾次爆炸（第三顆爆炸完成後觸發文字）
+        let explosionCount = 0;
+        let textShown = false; // 防止重複觸發文字
+
+        // ---------- 發射煙火 ----------
+        let lastZone = -1; // 放在 firework 函數外，記錄上一次的區域
+
+        function firework() {
+            if(!fireworksRunning)return;
+            if(fireworksActive>=4)return;
+            fireworksActive++;
+
+            const zoneWidth = canvas.width / 8;
+            let zone;
+            do {
+              zone = Math.floor(Math.random() * 6) + 2; // 2～7區域
+            } while(zone === lastZone); // 如果跟上次一樣就重新抽
+
+            lastZone = zone; // 記錄這次的區域
+            const x = zoneWidth * (zone + 0.5);
+            let y = canvas.height;
+            const targetY = rand(canvas.height * 0.2, canvas.height * 0.5);
+
+            try { launchSound.currentTime = 0; launchSound.play(); } catch (e) {}
+
+            const ascent = setInterval(() => {
+                // 半透明覆蓋創造尾跡效果
+                ctx.fillStyle = "rgba(0,0,0,0.2)";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                y -= 4; // 上升速度固定（4 px/frame）
+                ctx.fillStyle = "#aaa";
+                ctx.fillRect(x, y, 2, 6); // 火箭外觀：細短矩形
+
+                if (y <= targetY) {
+                    clearInterval(ascent);
+                    explode(x, y);
+                    fireworksActive--;
+                }
+            }, 16);
+        }
+
+        // ---------- 爆炸 ----------
+        function explode(x, y) {
+            try {
+                const sound = explodeSounds[Math.floor(Math.random() * explodeSounds.length)].cloneNode();
+                sound.volume = 0.8; // 可微調音量
+                sound.play();
+            } catch (e) {}
+
+
+
+            explosionCount++; // 每次爆炸完成就 +1
+
+            const color = pick(PALETTE);
+            //const burst = 80;
+            const burst = canvas.width < 600 ? 40 : 80;
+
+
+            for (let i = 0; i < burst; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const speed = rand(1, 4.5);
+                particles.push(new Particle(
+                    x, y,
+                    Math.cos(angle) * speed,
+                    Math.sin(angle) * speed,
+                    color,
+                    rand(400, 600),   // 壽命延長
+                    //canvas.width < 600 ? rand(250,400) : rand(400,600);
+                    rand(0.05, 0.1)   // 小重力值，隨機化
+                ));
+            }
+
+            // 若是第 3 次爆炸完成，且文字尚未顯示，則觸發文字進場
+            if (explosionCount === 3 && !textShown) {
+                textShown = true;
+                // 延遲一個小 frame 以保證畫面穩定（可省略）
+                setTimeout(() => {
+                    showBirthdayText();
+                }, 50);
+            }
+        }
+
+        // ---------- 動畫循環 ----------
+        function animate() {
+            requestAnimationFrame(animate);
+
+            ctx.fillStyle = "rgba(0,0,0,0.18)";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            for (let i = particles.length - 1; i >= 0; i--) {
+                particles[i].update();
+                particles[i].draw();
+                if (particles[i].life <= 0 || particles[i].alpha <= 0) particles.splice(i, 1);
+            }
+        }
+        animate();
+
+        // ---------- 發射排程 ----------
+        function scheduleFireworks() {
+            if (!fireworksRunning) return;
+            firework();
+            fireworkTimer = setTimeout(scheduleFireworks, rand(1000, 2000)); // 隨機 1~3 秒
+        }
+
+        // ---------- 文字動畫 ----------
+        const topText = "HAPPY BIRTHDAY";
+        const bottomText = "TO YOU";
+        const thewText = "ヾ(≧▽≦)ゝ";
+
+        const textContainer = document.getElementById("birthdayText");
+        const lineTop = document.getElementById("lineTop");
+        const lineBottom = document.getElementById("lineBottom");
+        const linethew = document.getElementById("linethew");
+
+        function clearTextLines() {
+            lineTop.innerHTML = "";
+            lineBottom.innerHTML = "";
+            linethew.innerHTML = "";
+        }
+
+        // showBirthdayText: 使用每字隨機 duration (0.6~1.2s) 與 delay (0~1s)
+        // 並記錄每字的 delay 與 duration，離場時沿用進場的 delay（規格要求）
+        function showBirthdayText() {
+            clearTextLines();
+            textContainer.style.display = "block";
+
+            // 儲存每個字的 timing（用於離場時沿用）
+            // 結構：{el, delay, duration, margin}
+            const charTimings = [];
+
+            // 建立字元元素（保持原順序）
+            function createCharsForLine(text, container) {
+                const chars = text.split("");
+                chars.forEach(ch => {
+                    const s = document.createElement("span");
+                    s.className = "char";
+                    s.textContent = ch === " " ? "\u00A0" : ch;
+
+                    // 顏色從 PALETTE 隨機挑（PALETTE 有 8 色）
+                    const color = pick(PALETTE);
+                    s.style.color = color;
+
+                    // 文字發光（保持發光效果）
+                    s.style.textShadow = `0 0 10px ${color}`;
+
+                    // 隨機字距 5~10 px（右邊 margin）
+                    const marginRight = Math.round(rand(5, 10));
+                    s.style.marginRight = marginRight + "px";
+
+                    // 隨機進場 duration 0.6 ~ 1.2s
+                    const duration = rand(0.6, 1.2);
+
+                    // 隨機 delay 0 ~ 1s
+                    const delay = rand(0, 0.5);
+
+                    // 設定 CSS 動畫（動態 duration 與 delay）
+                    s.style.animation = `flyUp ${duration}s ease-out forwards`;
+                    s.style.animationDelay = delay.toFixed(3) + "s";
+
+                    container.appendChild(s);
+
+                    // 記錄
+                    charTimings.push({
+                        el: s,
+                        delay: delay,
+                        duration: duration,
+                        margin: marginRight
+                    });
+                });
+            }
+
+            // 建立上、下行
+            createCharsForLine(topText, lineTop);
+            createCharsForLine(bottomText, lineBottom);
+            createCharsForLine(thewText, linethew);
+
+            // 計算所有字到位的最大時間 = max(delay + duration)
+            let maxArrival = 0;
+            for (let t of charTimings) {
+                const arrival = t.delay + t.duration;
+                if (arrival > maxArrival) maxArrival = arrival;
+            }
+
+            // 全部字到位後停留 5 秒（規格）
+            const stayTimeMs = Math.round((maxArrival * 1000) + 5000);
+
+            // 到位後的下一步：開始隨機選字離場（但我們要保留每字原始 delay，並沿用它）
+            setTimeout(() => {
+                beginRandomFlyOutUsingTimings(charTimings);
+            }, stayTimeMs);
+        }
+
+        // 離場：使用先前記錄的每字 delay（沿用進場延遲），離場順序為亂序（不改變 DOM 位置）
+        function beginRandomFlyOutUsingTimings(charTimings) {
+            // 先建立 indices 並打亂（決定哪個字先飛走）
+            const n = charTimings.length;
+            const indices = Array.from({ length: n }, (_, i) => i);
+            for (let i = indices.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [indices[i], indices[j]] = [indices[j], indices[i]];
+            }
+
+            // 我們要沿用每字的原始 delay 作為其離場的觸發間隔基礎
+            // 但為了把「進場延遲序列」映射到亂序的離場順序，我們會：
+            // - 取每個字原始的 delay 並排成一個 array（保持原字序）
+            // - 依照打亂後的 indices 決定哪個字先被安排哪個 delay
+            // 這樣符合作文意：沿用進場延遲（每字有一個 delay），但離場順序為亂序
+
+            // 取得原始 delays（依照 charTimings 的原始順序）
+            const originalDelays = charTimings.map(t => t.delay);
+
+            // 將 originalDelays 做一個排序（或就地保留），此處我們直接使用原序的 delays
+            // 接著把 delays 依照亂序 indices 指派給對應字
+            // 為了避免 delay 值彼此太相近造成全部同時飛走，我們會把 delays 做微調（乘以一個小係數）
+            const assignedDelays = new Array(n);
+            for (let orderIdx = 0; orderIdx < n; orderIdx++) {
+                const charIdx = indices[orderIdx]; // 這是 charTimings 的 index
+                // 從原始 delays 中取一個 delay（我們這裡選對應位置，以「沿用進場延遲」為主）
+                // 也可選用另一策略，但這會最忠實於「沿用進場延遲」
+                const baseDelay = originalDelays[charIdx];
+                // 我們使用 baseDelay 作為該字的離場觸發時間（ms）
+                assignedDelays[charIdx] = baseDelay;
+            }
+
+            // 接著將離場動作安排到每個字（使用 assignedDelays）
+            // 因為 assignedDelays 為秒數（0~1），我們可以將它們相乘或直接使用
+            for (let idx = 0; idx < n; idx++) {
+                const t = charTimings[idx];
+                // 我們保持離場 duration = 進場 duration
+                const flyDuration = t.duration;
+
+                // assignedDelays[idx] 可能是 undefined（保險），若 undefined 則 fallback 至 0
+                const useDelay = (assignedDelays[idx] !== undefined) ? assignedDelays[idx] : 0;
+                const delayMs = Math.round(useDelay * 1000);
+
+                // setTimeout 觸發該字的離場動畫（向上飛出）
+                setTimeout(() => {
+                    // 保持顏色與發光效果（不會先消失）
+                    t.el.style.animation = `flyOut ${flyDuration}s ease-in forwards`;
+                    t.el.style.animationDelay = "0s";
+                    // 若要更明顯保留發光，可再調 textShadow，但已在進場時設定
+                }, delayMs);
+            }
+
+            // 文字開始飛走後 4 秒停止放新的煙火（規格）
+            setTimeout(() => {
+                fireworksRunning = false;
+                if (fireworkTimer) {
+                    clearTimeout(fireworkTimer);
+                    fireworkTimer = null;
+                }
+            }, 4000);
+        }
+
+        // ---------- 回到初始畫面 ----------
+        function resetToStart() {
+            textContainer.style.display = "none";
+            clearTextLines();
+            fireworksActive = 0;
+            fireworksRunning = false;
+            particles = [];
+            explosionCount = 0;
+            textShown = false;
+            if (fireworkTimer) { clearTimeout(fireworkTimer); fireworkTimer = null; }
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            document.getElementById("startBtn").style.display = "block";
+        }
+
+        // ---------- 偵測結束（最後一顆粒子消失後 +1 秒回初始） ----------
+        let endWatcher = null;
+        function startEndWatcher() {
+            if (endWatcher) clearInterval(endWatcher);
+            endWatcher = setInterval(() => {
+                if (!fireworksRunning && particles.length === 0) {
+                    clearInterval(endWatcher);
+                    endWatcher = null;
+                    // 等 1 秒後重置（規格）
+                    setTimeout(resetToStart, 1000);
+                }
+            }, 500);
+        }
+
+        // ---------- Start 按鈕控制 ----------
+        document.getElementById("startBtn").onclick = () => {
+            // 啟動互動後才能播放音效
+            document.getElementById("startBtn").onclick = () => {
+                try { launchSound.currentTime = 0; launchSound.play(); } catch(e){}
+
+                document.getElementById("startBtn").style.display = "none";
+                particles = [];
+                fireworksRunning = true;
+                fireworksActive = 0;
+                explosionCount = 0;
+                textShown = false;
+
+                scheduleFireworks();
+                startEndWatcher();
+            };
+
+
+            document.getElementById("startBtn").style.display = "none";
+            particles=[];
+            fireworksRunning=true;
+            fireworksActive=0;
+            explosionCount=0;
+            textShown=false;
+            scheduleFireworks();
+            startEndWatcher();
+        };
+
+    </script>
+</body>
+</html>
